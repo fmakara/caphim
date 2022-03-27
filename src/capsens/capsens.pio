@@ -1,0 +1,42 @@
+.program capsens
+.wrap_target
+    set pindirs 1
+    set pins 0
+    out x 32
+    set pindirs 0
+waitloop:
+    jmp pin done
+    jmp x-- waitloop
+done:
+    in x 32
+.wrap
+% c-sdk {
+void capsens_program_init(PIO pio, uint sm, uint offset, uint pin) {
+    pio_gpio_init(pio, pin);
+    gpio_set_pulls(pin, false, false);
+    pio_sm_config c = capsens_program_get_default_config(offset);
+    sm_config_set_out_pins(&c, pin, 1);
+    sm_config_set_set_pins(&c, pin, 1);
+    sm_config_set_in_pins(&c, pin);
+    sm_config_set_jmp_pin(&c, pin);
+    sm_config_set_out_shift(&c, false, true, 32);
+    sm_config_set_in_shift(&c, false, true, 32);
+    sm_config_set_clkdiv(&c, 1);
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_NONE);
+    pio_sm_init(pio, sm, offset, &c);
+    // pio_sm_drain_tx_fifo(pio, sm);
+    pio_sm_set_enabled(pio, sm, true);
+}
+
+void capsens_program_deinit(PIO pio, uint sm, uint pin) {
+    pio_sm_set_enabled(pio, sm, false);
+    gpio_init(pin);
+    gpio_set_dir(pin, GPIO_OUT);
+    gpio_put(pin, false);
+}
+
+uint32_t capsens_program_read(PIO pio, uint sm, uint32_t maxcnt){
+    pio_sm_put_blocking(pio, sm, maxcnt);
+    return maxcnt - pio_sm_get_blocking(pio, sm);
+}
+%}
