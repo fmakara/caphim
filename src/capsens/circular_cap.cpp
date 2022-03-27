@@ -3,15 +3,15 @@
 #include "hardware/pio.h"
 #include "capsens.pio.h"
 
-#define PIO pio0
+#define PIO pio1
 #define CALC_PREC 4
-#define READ_SMOOTHING 32
+#define READ_SMOOTHING 64
 #define TEMPORAL_FILTER 4
 
-CircCapSens::CircCapSens(const std::vector<uint8_t>& pins, int maxCnt, int hister) 
+CircCapSens::CircCapSens(const std::vector<uint8_t>& pins, int maxCnt, int hister)
     : mMaxCnt(maxCnt)
-    , mHister(hister)
-    , mPads(pins.size(), PadData({0, maxCnt, maxCnt, false}))
+    , mHister(hister*READ_SMOOTHING)
+    , mPads(pins.size(), PadData({0, maxCnt*READ_SMOOTHING, maxCnt*READ_SMOOTHING, false}))
     , mStarted(false)
     , mPioOffset(0)
     , mPioSm(0)
@@ -23,7 +23,7 @@ CircCapSens::CircCapSens(const std::vector<uint8_t>& pins, int maxCnt, int histe
     , mHadDelta(false)
 {
     for(unsigned i=0; i<pins.size(); i++){
-        mPads[i].pin = pins[i];        
+        mPads[i].pin = pins[i];
     }
 }
 
@@ -43,13 +43,9 @@ void CircCapSens::init(){
 
 uint32_t CircCapSens::readPin(uint8_t pin){
     capsens_program_init(PIO, mPioSm, mPioOffset, pin);
-    uint32_t sum = 0;
-    for(int i=0; i<READ_SMOOTHING; i++){
-        sleep_us(1);
-        sum += capsens_program_read(PIO, mPioSm, mMaxCnt);
-    }
+    uint32_t ret = capsens_program_read(PIO, mPioSm, mMaxCnt);
     capsens_program_deinit(PIO, mPioSm, pin);
-    return sum/READ_SMOOTHING;
+    return ret;
 }
 
 int CircCapSens::read() {
@@ -58,9 +54,15 @@ int CircCapSens::read() {
     mLastState = mCurrState;
     mCurrState = false;
     int currPos = 0, currCnt = 0;
+    {
+        std::vector<uint32_t> sums(mPads.size(), 0);
+        for(int i=0; i<READ_SMOOTHING; i++){
+            for(int j=0; j<mPads.size(); j++) sums[j] += readPin(mPads[j].pin);
+        }
+        for(int i=0; i<mPads.size(); i++) mPads[i].lastRead = sums[i];
+    }
     for(unsigned i=0; i<size; i++){
-        mPads[i].lastRead = (mPads[i].lastRead*(TEMPORAL_FILTER-1) + readPin(mPads[i].pin))/TEMPORAL_FILTER;
-        // Debouncing logic
+        // Patent pending (TM) (#sqn) Debouncing logic
         if (mPads[i].state) {
             if(mPads[i].lastRead<mPads[i].threshold){
                 mPads[i].state = false;
@@ -113,7 +115,7 @@ std::vector<bool> CircCapSens::pressed(){
 std::vector<int> CircCapSens::rawVal(){
     std::vector<int> ret(mPads.size());
     for(unsigned i=0; i<mPads.size(); i++){
-        ret[i] = mPads[i].lastRead;
+        ret[i] = mPads[i].lastRead/READ_SMOOTHING;
     }
     return ret;
 }
