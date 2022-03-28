@@ -10,9 +10,11 @@ public:
     CircCapSens(const std::vector<uint8_t>& pins, int maxCnt = 1000, int hister = 3);
     void init();
 
-    int read(); // must be called each "decision iteration", as it updates the internal states
+    // Must be called each "decision iteration", as it updates the internal states
+    // Returns the estimated/averaged position of finger
+    int read();
 
-    int lastRead(); // last value
+    int lastRead(); // last value (used in conjunction with wasClicked)
     int lastDelta(); // used to easily jump between menus
 
     bool isPressed(); // only true on start of touch
@@ -21,13 +23,18 @@ public:
 
     bool wasClicked(); // true if no movement (in this touch) and isReleased
 
+    // If the pattern is too spread, will invalidate current touch.
+    // isHeld and isReleased will return false until next touch
+    bool isInvalid();
+
     std::vector<bool> pressed(); // all the segments states
-    std::vector<int> rawVal(); // all the segments values
+    std::vector<int> rawVal(); // all the segments values (used in debugging)
 
 private:
     int mMaxCnt, mHister;
     struct PadData {
         uint8_t pin;
+        int relPosX, relPosY;
         int lastRead;
         int threshold;
         bool state;
@@ -40,6 +47,6 @@ private:
     uint8_t mPioOffset, mPioSm;
 
     // Scroll logic
-    int mLastPos, mLastIntPos, mLastDelta;
-    bool mCurrState, mLastState, mHadDelta;
+    int mLastPos, mFirstPos, mLastDelta;
+    bool mCurrState, mLastState, mHadDelta, mTouchInvalid;
 };

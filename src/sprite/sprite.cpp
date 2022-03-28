@@ -73,7 +73,7 @@ Sprite::Color Sprite::getPixel(uint8_t x, uint8_t y){
 
 void Sprite::vertLine(uint8_t x, uint8_t y0, uint8_t y1, Color c){
     if(x>=_w || y1<y0 || y0>=_h || y1>=_h)return;
-    uint64_t bit = ((1<<(y1+_y+1))-1) & ~((1<<(y0+_y+1))-1);
+    uint64_t bit = ((1ULL<<(y1+_y+1))-1) & ~((1ULL<<(y0+_y))-1);
     uint64_t col;
     uint8_t *ptr = buffer + _s*(x+_x);
     memcpy(&col, ptr, _s);
@@ -85,7 +85,7 @@ void Sprite::vertLine(uint8_t x, uint8_t y0, uint8_t y1, Color c){
 
 void Sprite::horzLine(uint8_t x0, uint8_t x1, uint8_t y, Color c){
     if(x0>=_w || x1>=_w || x1<x0 || y>=_h)return;
-    uint64_t bit = 1<<(y+_y);
+    uint64_t bit = 1ULL<<(y+_y);
     for(int i=x0; i<x1; i++){
         uint8_t *ptr = buffer + _s*(i+_x);
         uint64_t col;
