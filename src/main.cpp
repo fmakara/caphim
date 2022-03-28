@@ -7,7 +7,7 @@
 
 SSD1306_128x64 display;
 Dict8 dict8(&display);
-CircCapSens capsens({15, 14, 13, 12, 11, 10, 25, 0, 1, 2, 7, 6}, 5000, 10);
+CircCapSens capsens({15, 14, 13, 12, 11, 10, 25, 0, 1, 2, 7, 6}, 5000, 5);
 
 int main(){
     display.init(5, 4, 0);
