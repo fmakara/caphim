@@ -1,0 +1,787 @@
+diff --git a/.vscode/settings.json b/.vscode/settings.json
+new file mode 100644
+index 000000000..a837c95ff
+--- /dev/null
++++ b/.vscode/settings.json
+@@ -0,0 +1,4 @@
++{
++    "cmake.configureOnOpen": true,
++    "cmake.sourceDirectory": "${workspaceFolder}/ports/rp2"
++}
+\ No newline at end of file
+diff --git a/ports/rp2/capsens.pio.h b/ports/rp2/capsens.pio.h
+new file mode 100644
+index 000000000..17f0e4b93
+--- /dev/null
++++ b/ports/rp2/capsens.pio.h
+@@ -0,0 +1,71 @@
++// -------------------------------------------------- //
++// Generated outside here. Too Dum-Dum to generate automatically //
++// -------------------------------------------------- //
++
++#pragma once
++
++#if !PICO_NO_HARDWARE
++#include "hardware/pio.h"
++#endif
++
++// ------- //
++// capsens //
++// ------- //
++
++#define capsens_wrap_target 0
++#define capsens_wrap 6
++
++static const uint16_t capsens_program_instructions[] = {
++            //     .wrap_target
++    0xe081, //  0: set    pindirs, 1                 
++    0xe000, //  1: set    pins, 0                    
++    0x6020, //  2: out    x, 32                      
++    0xe080, //  3: set    pindirs, 0                 
++    0x00c6, //  4: jmp    pin, 6                     
++    0x0044, //  5: jmp    x--, 4                     
++    0x4020, //  6: in     x, 32                      
++            //     .wrap
++};
++
++#if !PICO_NO_HARDWARE
++static const struct pio_program capsens_program = {
++    .instructions = capsens_program_instructions,
++    .length = 7,
++    .origin = -1,
++};
++
++static inline pio_sm_config capsens_program_get_default_config(uint offset) {
++    pio_sm_config c = pio_get_default_sm_config();
++    sm_config_set_wrap(&c, offset + capsens_wrap_target, offset + capsens_wrap);
++    return c;
++}
++
++void capsens_program_init(PIO pio, uint sm, uint offset, uint pin) {
++    pio_gpio_init(pio, pin);
++    gpio_set_pulls(pin, false, false);
++    pio_sm_config c = capsens_program_get_default_config(offset);
++    sm_config_set_out_pins(&c, pin, 1);
++    sm_config_set_set_pins(&c, pin, 1);
++    sm_config_set_in_pins(&c, pin);
++    sm_config_set_jmp_pin(&c, pin);
++    sm_config_set_out_shift(&c, false, true, 32);
++    sm_config_set_in_shift(&c, false, true, 32);
++    sm_config_set_clkdiv(&c, 1);
++    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_NONE);
++    pio_sm_init(pio, sm, offset, &c);
++    // pio_sm_drain_tx_fifo(pio, sm);
++    pio_sm_set_enabled(pio, sm, true);
++}
++void capsens_program_deinit(PIO pio, uint sm, uint pin) {
++    pio_sm_set_enabled(pio, sm, false);
++    gpio_init(pin);
++    gpio_set_dir(pin, GPIO_OUT);
++    gpio_put(pin, false);
++}
++uint32_t capsens_program_read(PIO pio, uint sm, uint32_t maxcnt){
++    pio_sm_put_blocking(pio, sm, maxcnt);
++    return maxcnt - pio_sm_get_blocking(pio, sm);
++}
++
++#endif
++
+diff --git a/ports/rp2/modcapsens.c b/ports/rp2/modcapsens.c
+new file mode 100644
+index 000000000..b7ddec683
+--- /dev/null
++++ b/ports/rp2/modcapsens.c
+@@ -0,0 +1,285 @@
++/*
++ * This file is part of the CapIHM project (https://github.com/fmakara/capihm)
++ *
++ * The MIT License (MIT)
++ *
++ * Copyright (c) 2022 Felipe Makara
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++ * copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++ * THE SOFTWARE.
++ */
++
++#include "py/runtime.h"
++#include <stdlib.h>
++#include "hardware/pio.h"
++#include "hardware/gpio.h"
++#include "mphalport.h"
++#include "modmachine.h"
++#include "capsens.pio.h"
++
++#define DEFAULT_REPEATS (128)
++#define DEFAULT_MAX_COUNT (5000)
++#define DEFAULT_SM (1)
++#define PIO_OBJ(pio) ((pio)==0 ? pio0 : pio1)
++
++typedef struct {
++    int offset;
++    int sm;
++    PIO pio;
++    pio_sm_config cfgs;
++} FirmwareData;
++
++static FirmwareData firmwares[2] = {
++    {-1, -1, pio0},
++    {-1, -1, pio1}
++};
++
++void capsens_init_firmware(uint8_t pio){
++    if(firmwares[pio].sm<0){
++        if(!pio_can_add_program(firmwares[pio].pio, &capsens_program)){
++            mp_raise_msg_varg(&mp_type_RuntimeError, MP_ERROR_TEXT("no space in pio %d"), pio);
++        }
++        firmwares[pio].offset = pio_add_program(firmwares[pio].pio, &capsens_program);
++        firmwares[pio].sm = pio_claim_unused_sm(firmwares[pio].pio, true);
++        if(firmwares[pio].sm<0){
++            pio_remove_program(firmwares[pio].pio, &capsens_program, firmwares[pio].offset);
++            firmwares[pio].offset = -1;
++            mp_raise_msg_varg(&mp_type_RuntimeError, MP_ERROR_TEXT("no available sm in pio %d"), pio);
++        }
++        firmwares[pio].cfgs = capsens_program_get_default_config(firmwares[pio].offset);
++        sm_config_set_out_shift(&firmwares[pio].cfgs, false, true, 32);
++        sm_config_set_in_shift(&firmwares[pio].cfgs, false, true, 32);
++        sm_config_set_clkdiv(&firmwares[pio].cfgs, 1);
++        sm_config_set_fifo_join(&firmwares[pio].cfgs, PIO_FIFO_JOIN_NONE);
++    }
++}
++
++void capsens_release_firmware(uint8_t pio){
++    if(firmwares[pio].sm>=0){
++        pio_sm_unclaim(firmwares[pio].pio, firmwares[pio].sm);
++        pio_remove_program(firmwares[pio].pio, &capsens_program, firmwares[pio].offset);
++        firmwares[pio].sm = -1;
++        firmwares[pio].offset = -1;
++    }
++}
++
++uint32_t capsens_single_read_pin(uint8_t pio, uint8_t pin, uint32_t max_count){
++    // re-init
++    pio_gpio_init(firmwares[pio].pio, pin);
++    gpio_set_pulls(pin, false, false);
++    sm_config_set_set_pins(&firmwares[pio].cfgs, pin, 1);
++    sm_config_set_jmp_pin(&firmwares[pio].cfgs, pin);
++    pio_sm_init(firmwares[pio].pio, firmwares[pio].sm, firmwares[pio].offset, &firmwares[pio].cfgs);
++    pio_sm_set_enabled(firmwares[pio].pio, firmwares[pio].sm, true);
++    // read
++    pio_sm_put_blocking(firmwares[pio].pio, firmwares[pio].sm, max_count);
++    uint32_t read = pio_sm_get_blocking(firmwares[pio].pio, firmwares[pio].sm);
++    // de-init
++    pio_sm_set_enabled(firmwares[pio].pio, firmwares[pio].sm, false);
++    gpio_init(pin);
++    gpio_set_dir(pin, GPIO_OUT);
++    gpio_put(pin, false);
++    return max_count-read;
++}
++
++STATIC mp_obj_t capsens_read_raw_circular(size_t n_pos_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
++    enum { ARG_pins, ARG_repeats, ARG_max_count, ARG_pio };
++    static const mp_arg_t allowed_args[] = {
++        { MP_QSTR_pins,      MP_ARG_REQUIRED | MP_ARG_OBJ },
++        { MP_QSTR_repeats,   MP_ARG_INT, {.u_int = DEFAULT_REPEATS} },
++        { MP_QSTR_max_count, MP_ARG_INT, {.u_int = DEFAULT_MAX_COUNT} },
++        { MP_QSTR_pio,       MP_ARG_INT, {.u_int = DEFAULT_SM} },
++    };
++    // Parse args
++    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
++    mp_arg_parse_all(n_pos_args, pos_args, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
++
++    size_t pinCount;
++    mp_obj_t *pinObjs;
++    if(mp_obj_is_type(args[ARG_pins].u_obj, &mp_type_list)){
++        mp_obj_list_get(args[ARG_pins].u_obj, &pinCount, &pinObjs);
++    } else if(mp_obj_is_type(args[ARG_pins].u_obj, &mp_type_tuple)){
++        mp_obj_tuple_get(args[ARG_pins].u_obj, &pinCount, &pinObjs);
++    } else {
++        mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("pins is should be a tuple or a list"));
++    }
++    if(pinCount<=0) return mp_const_empty_tuple;
++
++    // Data validation
++    int repeats = args[ARG_repeats].u_int;
++    int max_count = args[ARG_max_count].u_int;
++    int pio = args[ARG_pio].u_int;
++
++    if(repeats<1      ) mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("invalid repeats [%d]"), repeats);
++    if(max_count<1    ) mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("invalid max_count [%d]"), max_count);
++    if(pio<0 || pio>=2) mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("invalid pio [%d]"), pio);
++
++    uint8_t *pins = (uint8_t*)malloc(pinCount);
++    if(!pins) mp_raise_msg_varg(&mp_type_RuntimeError, MP_ERROR_TEXT("no memory for malloc"));
++
++    for(size_t i=0; i<pinCount; i++){
++        if(mp_obj_is_int(pinObjs[i])){
++            int id = mp_obj_get_int(pinObjs[i]);
++            if(id<0 || id>=32) mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("pins[%d] is invalid (%d)"), i, id);
++            pins[i] = id;
++        } else if(mp_obj_is_type(pinObjs[i], &machine_pin_type)){
++            pins[i] = mp_hal_pin_name(mp_hal_get_pin_obj(pinObjs[i]));
++        } else {
++            mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("pins[%d] is invalid (should be int or Pin)"), i);
++        }
++    }
++
++    // very sad this isn't C++ to use std::vector...
++    uint32_t *values = (uint32_t*)malloc(pinCount*sizeof(uint32_t));
++    if(!values) {
++        free(pins);
++        mp_raise_msg_varg(&mp_type_RuntimeError, MP_ERROR_TEXT("no memory for malloc"));
++    }
++    mp_obj_t *tuple = (mp_obj_t*)malloc(pinCount*sizeof(mp_obj_t));
++    if(!tuple) {
++        free(pins);
++        free(values);
++        mp_raise_msg_varg(&mp_type_RuntimeError, MP_ERROR_TEXT("no memory for malloc"));
++    }
++
++    // Main behaviour
++    capsens_init_firmware(pio);
++    
++    for(int i=0; i<pinCount; i++){
++        gpio_init(pins[i]);
++        gpio_set_dir(pins[i], GPIO_OUT);
++        gpio_put(pins[i], false);
++        values[i] = 0;
++    }
++
++    for(int i=0; i<repeats; i++){
++        for(int j=0; j<pinCount; j++){
++            values[j] += capsens_single_read_pin(pio, pins[j], max_count);
++        }
++    }
++
++    // Returning tuple with data
++    for(int i=0; i<pinCount; i++){
++        tuple[i] = mp_obj_new_int(values[i]);
++    }
++    mp_obj_t ret = mp_obj_new_tuple(pinCount, tuple);
++    free(values);
++    free(tuple);
++    free(pins);
++    return ret;
++}
++STATIC MP_DEFINE_CONST_FUN_OBJ_KW(capsens_read_raw_circular_obj, 1, capsens_read_raw_circular);
++
++STATIC mp_obj_t capsens_read_raw_single(size_t n_pos_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
++    enum { ARG_pin, ARG_repeats, ARG_max_count, ARG_pio };
++    static const mp_arg_t allowed_args[] = {
++        { MP_QSTR_pin,       MP_ARG_REQUIRED | MP_ARG_OBJ },
++        { MP_QSTR_repeats,   MP_ARG_INT, {.u_int = 1} },
++        { MP_QSTR_max_count, MP_ARG_INT, {.u_int = DEFAULT_MAX_COUNT} },
++        { MP_QSTR_pio,       MP_ARG_INT, {.u_int = DEFAULT_SM} },
++    };
++    // Parse args
++    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
++    mp_arg_parse_all(n_pos_args, pos_args, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
++
++    // Data validation
++    int repeats = args[ARG_repeats].u_int;
++    int max_count = args[ARG_max_count].u_int;
++    int pio = args[ARG_pio].u_int;
++
++    if(repeats<1      ) mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("invalid repeats [%d]"), repeats);
++    if(max_count<1    ) mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("invalid max_count [%d]"), max_count);
++    if(pio<0 || pio>=2) mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("invalid pio [%d]"), pio);
++
++    int pin = -1;
++    if(mp_obj_is_int(args[ARG_pin].u_obj)){
++        int id = mp_obj_get_int(args[ARG_pin].u_obj);
++        if(id<0 || id>=32) mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("pin is invalid (%d)"), id);
++        pin = id;
++    } else if(mp_obj_is_type(args[ARG_pin].u_obj, &machine_pin_type)){
++        pin = mp_hal_pin_name(mp_hal_get_pin_obj(args[ARG_pin].u_obj));
++    } else {
++        mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("pin is invalid (should be int or Pin)"));
++    }
++
++    // Main behaviour
++    capsens_init_firmware(pio);
++    
++    gpio_init(pin);
++    gpio_set_dir(pin, GPIO_OUT);
++    gpio_put(pin, false);
++
++    uint32_t sum = 0;
++    for(int i=0; i<repeats; i++){
++        sum += capsens_single_read_pin(pio, pin, max_count);
++    }
++
++    // Returning data
++    return mp_obj_new_int(sum);
++}
++MP_DEFINE_CONST_FUN_OBJ_KW(capsens_read_raw_single_obj, 1, capsens_read_raw_single);
++
++STATIC mp_obj_t capsens_free_resources(mp_obj_t pio) {
++    if(!mp_obj_is_int(pio)){
++        mp_raise_TypeError(MP_ERROR_TEXT("free_resources needs a PIO (int)"));
++    }
++    int pio_id = mp_obj_get_int(pio);
++    if(pio_id<0 || pio_id>=2){
++        mp_raise_TypeError(MP_ERROR_TEXT("PIO must be valid (0<=pio<2)"));
++    }
++    capsens_release_firmware(pio_id);
++    return mp_const_empty_tuple;
++}
++MP_DEFINE_CONST_FUN_OBJ_1(capsens_free_resources_obj, capsens_free_resources);
++
++const mp_rom_obj_tuple_t capsens_default_pins_obj = {
++    .base = {&mp_type_tuple},
++    .len = 12,
++    .items = {
++        MP_ROM_INT(15),
++        MP_ROM_INT(14),
++        MP_ROM_INT(13),
++        MP_ROM_INT(12),
++        MP_ROM_INT(11),
++        MP_ROM_INT(10),
++        MP_ROM_INT(25),
++        MP_ROM_INT(0),
++        MP_ROM_INT(1),
++        MP_ROM_INT(2),
++        MP_ROM_INT(7),
++        MP_ROM_INT(6)
++    }
++};
++
++
++STATIC const mp_rom_map_elem_t mp_module_capsens_table[] = {
++    { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR__capsens) },
++
++    { MP_ROM_QSTR(MP_QSTR_DEFAULT_PINS), MP_ROM_PTR(&capsens_default_pins_obj) },
++
++    { MP_ROM_QSTR(MP_QSTR_read_list), MP_ROM_PTR(&capsens_read_raw_circular_obj) },
++    { MP_ROM_QSTR(MP_QSTR_read_pin), MP_ROM_PTR(&capsens_read_raw_single_obj) },
++    { MP_ROM_QSTR(MP_QSTR_free_resources), MP_ROM_PTR(&capsens_free_resources_obj) },
++};
++
++STATIC MP_DEFINE_CONST_DICT(mp_module_capsens_globals, mp_module_capsens_table);
++
++const mp_obj_module_t mp_module_capsens = {
++    .base = { &mp_type_module },
++    .globals = (mp_obj_dict_t *)&mp_module_capsens_globals,
++};
+diff --git a/ports/rp2/modules/capsens.py b/ports/rp2/modules/capsens.py
+new file mode 100644
+index 000000000..3de0ec950
+--- /dev/null
++++ b/ports/rp2/modules/capsens.py
+@@ -0,0 +1,267 @@
++from machine import Pin
++from rp2 import PIO, StateMachine, asm_pio
++from utime import sleep_ms, sleep_us
++from math import cos, sin, atan2, pi
++import _thread
++import _capsens
++
++def capsens_thread(self):
++    while True:
++        data = self.rawRead()
++        self._mutex.acquire()
++        self._data = data
++        self._mutex.release()
++
++class CircCapSens:
++    """A circular capacitive controller, able to implement buttons and/or circular dial"""
++    SCALE_FIXED_POS = 1000
++    CUTOFF_POS_RATIO = 0.1
++    CUTOFF_POS_SQUARED = int(CUTOFF_POS_RATIO*CUTOFF_POS_RATIO*SCALE_FIXED_POS*SCALE_FIXED_POS)
++
++    def __init__(self, pins=_capsens.DEFAULT_PINS, maxCount=5000, histeresis=5, readSmoothing=128, temporalFilter=4, pio=1, precision=2, threading=False):
++        """
++        Parameters:
++            pins: Erray with the capacitive pins in order. Elements can be int or Pin()
++            maxCount: maximum wait period for each sample
++            histeresis: value delta that determines an action. Make lower if no response, make higher if too sensitive
++            readSmoothing: number of times each pin is read each interation ('instant filter')
++            temporalFilter: the factor for simple IIR filter. Set to 1 to disable
++            sm_id: the ID for StateMachine
++            precision: Precision passed to the user. Output range for dial is len(pins)*precision for each turn
++            threading: read() may take some ms, so in order to have fluid operation this allocates second core to do it for you
++        """
++        truepins = tuple(i if isinstance(i, Pin) else Pin(i) for i in pins)
++        maxvalue = maxCount*readSmoothing
++
++        self.histeresis = histeresis
++        self.readSmoothing = readSmoothing
++        self.temporalFilter = temporalFilter
++
++        self._pio = pio
++        self._maxCount = maxCount
++        self._lastPos = 0
++        self._firstPos = 0
++        self._lastDelta = 0
++        self._currState = False
++        self._lastState = False
++        self._hadDelta = False
++        self._touchInvalid = False
++        self._precision = precision
++        self._mutex = None
++        self._pinCount = len(truepins)
++        self._pins = truepins
++        self._positions = len(truepins)*[0]
++        self._lastValues = len(truepins)*[maxvalue]
++        self._thresholds = len(truepins)*[maxvalue]
++        self._states = len(truepins)*[False]
++
++        for i in range(self._pinCount):
++            angle = i*2*pi/self._pinCount
++            truepins[i].init(Pin.OUT, value=0)
++            self._positions[i] =  (self.SCALE_FIXED_POS*cos(angle),self.SCALE_FIXED_POS*sin(angle))
++
++        if threading:
++            self._data = None
++            self._mutex = _thread.allocate_lock()
++            _thread.start_new_thread(capsens_thread, (self))
++
++    def rawRead(self):
++        """
++        Do a raw read of the sensors without updating internal states.
++        Used for instant update with multithreading (i.e. rawRead in background,
++        send the return to foreground, which updates the states as fast as possible)
++        """
++        return _capsens.read_list(self._pins, self.readSmoothing, self._maxCount, self._pio)
++
++    def updateState(self, rawRead):
++        """
++        Updates the current state. Used in conjunction with 'rawRead()'
++        This function usually should not be used directly. See 'read()'
++        """
++        hist = self.histeresis*self.readSmoothing
++        temp = self.temporalFilter
++        self._lastState = self._currState
++
++        for i in range(self._pinCount):
++            self._lastValues[i] = (self._lastValues[i]*(temp-1)+rawRead[i])/temp
++
++        currPosX = 0
++        currPosY = 0
++        currCnt = 0
++        for i in range(self._pinCount):
++            # Patent penting (TM) (#sqn) Debouncing Logic
++            if self._states[i]:
++                if self._lastValues[i]<self._thresholds[i]:
++                    self._states[i] = False
++                    self._thresholds[i] = self._lastValues[i]+hist
++                elif self._thresholds[i]+hist<self._lastValues[i]:
++                    self._thresholds[i] = self._lastValues[i]-hist
++            else:
++                if self._lastValues[i]>self._thresholds[i]:
++                    self._states[i] = True
++                    self._thresholds[i] = self._lastValues[i]-hist
++                elif self._thresholds[i]>self._lastValues[i]+hist:
++                    self._thresholds[i] = self._lastValues[i]+hist
++            if self._states[i]:
++                currPosX += self._positions[i][0]
++                currPosY += self._positions[i][1]
++                currCnt = currCnt+1
++
++        self._currState = currCnt>0
++
++        if (not self._lastState) or (not self._currState):
++            self._lastPos = 0
++            self._firstPos = 0
++            self._lastDelta = 0
++            self._touchInvalid = False
++
++        if not self._currState:
++            return
++
++        currPosX = currPosX/currCnt
++        currPosY = currPosY/currCnt
++        distSquared = currPosX*currPosX + currPosY*currPosY
++
++        if distSquared<self.CUTOFF_POS_SQUARED:
++            # average position too close to center
++            self._touchInvalid = True
++            return
++
++        fullAngle = self._pinCount*self._precision
++        halfAngle = fullAngle//2
++        angle = int(halfAngle*(1+atan2(currPosY, currPosX)/pi))
++
++        # Reset angles on start of pressing
++        if not self._lastState:
++            self._lastPos = angle
++            self._firstPos = angle
++            self._hadDelta = False
++
++        modCurrAngle = self._lastPos%fullAngle
++        deltaAngle = angle-modCurrAngle
++        if deltaAngle<-halfAngle: deltaAngle = deltaAngle+fullAngle
++        if deltaAngle>halfAngle: deltaAngle = deltaAngle-fullAngle
++
++        # dead-zone algorithm (avoids jumping between 2 positions)
++        halfPrecision = self._precision//2
++        deltaAngle = deltaAngle-halfPrecision if deltaAngle>0 else deltaAngle+halfPrecision
++        self._lastDelta = deltaAngle//self._precision
++        self._lastPos = self._lastPos+self._lastDelta
++        self._hadDelta = self._hadDelta or self._lastDelta!=0
++
++    def read(self):
++        """
++        Runs the read algorithm and/or updates the internal variables
++        Only call this function once each 'decision loop', since it will
++        update the internal values and a button press may be lost
++        """
++        if not(self._mutex is None):
++            while True:
++                self._mutex.acquire()
++                data = self._data
++                self._data = None
++                self._mutex.release()
++                if not (data is None):
++                    self.updateState(data)
++                    return
++                sleep_ms(1)
++        # else:
++        self.updateState(self.rawRead())
++
++    def lastDelta(self):
++        """
++        The value delta of the dial. Use in your application like:
++            menuPos = (menuPos + sens.lastDelta()) % numItems
++        or:
++            menuPos = min(numItems-1, max(0, menuPos + sens.lastDelta() ))
++        """
++        return self._lastDelta
++
++    def lastRead(self):
++        """The current dial 'value'. Resets on release"""
++        return self._lastPos-self._firstPos
++
++    def isHeld(self):
++        """True while something is beeing pressed and not invalid"""
++        return self._currState and not self._touchInvalid
++
++    def isPressed(self):
++        """True only on start of press"""
++        return (self._currState and not self._lastState)
++
++    def isReleased(self):
++        """True only on end of press nd not invalidated in the middle of the motion"""
++        return (self._lastState and not self._currState) and not self._touchInvalid
++
++    def wasClicked(self):
++        """True only when there is a press+release without movement"""
++        return self.isReleased() and not self._hadDelta
++
++    def isInvalid(self):
++        """Set True if during the movement the average position of all touched positions is too close to center"""
++        return self._touchInvalid
++
++    def states(self):
++        """array[bool] with the individual pads pressed"""
++        return self._states
++
++    def values(self):
++        """array[int] with the individual capacitive/time values (for debug mostly)"""
++        return  [ it//self.readSmoothing for it in self._lastValues ]
++
++def displayRing(states, fbuf, startOff=254, size=(128,64)):
++    """
++    As a form to inform the current pads being considered pressed, it is sugested that
++    (after rendering the screen) this funcion or something similar be called.
++    This function renders a 1 pixel ring around the screen that (try to) display
++    which pads are being considered as pressed.
++    """
++    maxLen = 2*size[0]+2*size[1]-4
++    acc = 1+maxLen//len(states);
++    for i in range(len(states)):
++        offset = (startOff+(i*maxLen)//len(states))%maxLen
++        end = offset+acc
++        c = 1 if states[i] else 0
++        # top
++        if offset<(size[0]-1):
++            if end<(size[0]-1):
++                fbuf.hline(offset, 0, end-offset, c)
++                continue
++            fbuf.hline(offset, 0, size[0]-(1+offset), c)
++            offset = size[0]-1
++        offset = offset-(size[0]-1)
++        end = end-(size[0]-1)
++        # right
++        if offset<(size[1]-1):
++            if end<(size[1]-1):
++                fbuf.vline(size[0]-1, offset, end-offset, c)
++                continue
++            fbuf.vline(size[0]-1, offset, size[1]-(1+offset), c)
++            offset = size[1]-1
++        offset = offset-(size[1]-1)
++        end = end-(size[1]-1)
++        # bottom
++        if offset<(size[0]-1):
++            if end<(size[0]-1):
++                fbuf.hline(size[0]-(end+1), size[1]-1, end-offset, c)
++                continue
++            fbuf.hline(0, size[1]-1, size[0]-(1+offset), c)
++            offset = size[0]-1
++        offset = offset-(size[0]-1)
++        end = end-(size[0]-1)
++        # left
++        if offset<(size[1]-1):
++            if end<(size[1]-1):
++                fbuf.vline(0, size[1]-end, end-offset, c)
++                continue
++            fbuf.vline(0, 0, size[1]-(1+offset), c)
++            offset = size[1]-1
++        offset = offset-(size[1]-1)
++        end = end-(size[1]-1)
++        # top again
++        if offset<(size[0]-1):
++            if end<(size[0]-1):
++                fbuf.hline(offset, 0, end-offset, c)
++                continue
++            fbuf.hline(offset, 0, size[0]-(1+offset), c)
++        # right again only if len(states)<=3 or width too small
+diff --git a/ports/rp2/modules/ssd1306.py b/ports/rp2/modules/ssd1306.py
+new file mode 100644
+index 000000000..f188b214f
+--- /dev/null
++++ b/ports/rp2/modules/ssd1306.py
+@@ -0,0 +1,129 @@
++#MicroPython SSD1306 OLED driver, I2C and SPI interfaces created by Adafruit
++
++import time
++import framebuf
++
++# register definitions
++SET_CONTRAST        = const(0x81)
++SET_ENTIRE_ON       = const(0xa4)
++SET_NORM_INV        = const(0xa6)
++SET_DISP            = const(0xae)
++SET_MEM_ADDR        = const(0x20)
++SET_COL_ADDR        = const(0x21)
++SET_PAGE_ADDR       = const(0x22)
++SET_DISP_START_LINE = const(0x40)
++SET_SEG_REMAP       = const(0xa0)
++SET_MUX_RATIO       = const(0xa8)
++SET_COM_OUT_DIR     = const(0xc0)
++SET_DISP_OFFSET     = const(0xd3)
++SET_COM_PIN_CFG     = const(0xda)
++SET_DISP_CLK_DIV    = const(0xd5)
++SET_PRECHARGE       = const(0xd9)
++SET_VCOM_DESEL      = const(0xdb)
++SET_CHARGE_PUMP     = const(0x8d)
++
++
++class SSD1306:
++    def __init__(self, width, height, external_vcc):
++        self.width = width
++        self.height = height
++        self.external_vcc = external_vcc
++        self.pages = self.height // 8
++        # Note the subclass must initialize self.framebuf to a framebuffer.
++        # This is necessary because the underlying data buffer is different
++        # between I2C and SPI implementations (I2C needs an extra byte).
++        self.poweron()
++        self.init_display()
++
++    def init_display(self):
++        for cmd in (
++            SET_DISP | 0x00, # off
++            # address setting
++            SET_MEM_ADDR, 0x00, # horizontal
++            # resolution and layout
++            SET_DISP_START_LINE | 0x00,
++            SET_SEG_REMAP | 0x01, # column addr 127 mapped to SEG0
++            SET_MUX_RATIO, self.height - 1,
++            SET_COM_OUT_DIR | 0x08, # scan from COM[N] to COM0
++            SET_DISP_OFFSET, 0x00,
++            SET_COM_PIN_CFG, 0x02 if self.height == 32 else 0x12,
++            # timing and driving scheme
++            SET_DISP_CLK_DIV, 0x80,
++            SET_PRECHARGE, 0x22 if self.external_vcc else 0xf1,
++            SET_VCOM_DESEL, 0x30, # 0.83*Vcc
++            # display
++            SET_CONTRAST, 0xff, # maximum
++            SET_ENTIRE_ON, # output follows RAM contents
++            SET_NORM_INV, # not inverted
++            # charge pump
++            SET_CHARGE_PUMP, 0x10 if self.external_vcc else 0x14,
++            SET_DISP | 0x01): # on
++            self.write_cmd(cmd)
++        self.fill(0)
++        self.show()
++
++    def poweroff(self):
++        self.write_cmd(SET_DISP | 0x00)
++
++    def contrast(self, contrast):
++        self.write_cmd(SET_CONTRAST)
++        self.write_cmd(contrast)
++
++    def invert(self, invert):
++        self.write_cmd(SET_NORM_INV | (invert & 1))
++
++    def show(self):
++        x0 = 0
++        x1 = self.width - 1
++        if self.width == 64:
++            # displays with width of 64 pixels are shifted by 32
++            x0 += 32
++            x1 += 32
++        self.write_cmd(SET_COL_ADDR)
++        self.write_cmd(x0)
++        self.write_cmd(x1)
++        self.write_cmd(SET_PAGE_ADDR)
++        self.write_cmd(0)
++        self.write_cmd(self.pages - 1)
++        self.write_framebuf()
++
++    def fill(self, col):
++        self.framebuf.fill(col)
++
++    def pixel(self, x, y, col):
++        self.framebuf.pixel(x, y, col)
++
++    def scroll(self, dx, dy):
++        self.framebuf.scroll(dx, dy)
++
++    def text(self, string, x, y, col=1):
++        self.framebuf.text(string, x, y, col)
++
++
++class SSD1306_I2C(SSD1306):
++    def __init__(self, width, height, i2c, addr=0x3c, external_vcc=False):
++        self.i2c = i2c
++        self.addr = addr
++        self.temp = bytearray(2)
++        # Add an extra byte to the data buffer to hold an I2C data/command byte
++        # to use hardware-compatible I2C transactions.  A memoryview of the
++        # buffer is used to mask this byte from the framebuffer operations
++        # (without a major memory hit as memoryview doesn't copy to a separate
++        # buffer).
++        self.buffer = bytearray(((height // 8) * width) + 1)
++        self.buffer[0] = 0x40  # Set first byte of data buffer to Co=0, D/C=1
++        self.framebuf = framebuf.FrameBuffer1(memoryview(self.buffer)[1:], width, height)
++        super().__init__(width, height, external_vcc)
++
++    def write_cmd(self, cmd):
++        self.temp[0] = 0x80 # Co=1, D/C#=0
++        self.temp[1] = cmd
++        self.i2c.writeto(self.addr, self.temp)
++
++    def write_framebuf(self):
++        # Blast out the frame buffer using a single I2C transaction to support
++        # hardware I2C interfaces.
++        self.i2c.writeto(self.addr, self.buffer)
++
++    def poweron(self):
++        pass

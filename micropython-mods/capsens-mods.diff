@@ -1,0 +1,40 @@
+diff --git a/ports/rp2/CMakeLists.txt b/ports/rp2/CMakeLists.txt
+index bf3a51be9..6ced210ae 100644
+--- a/ports/rp2/CMakeLists.txt
++++ b/ports/rp2/CMakeLists.txt
+@@ -100,6 +100,7 @@ set(MICROPY_SOURCE_PORT
+     modmachine.c
+     modrp2.c
+     modutime.c
++    modcapsens.c
+     mphalport.c
+     mpthreadport.c
+     rp2_flash.c
+@@ -128,6 +129,7 @@ set(MICROPY_SOURCE_QSTR
+     ${PROJECT_SOURCE_DIR}/modrp2.c
+     ${PROJECT_SOURCE_DIR}/moduos.c
+     ${PROJECT_SOURCE_DIR}/modutime.c
++    ${PROJECT_SOURCE_DIR}/modcapsens.c
+     ${PROJECT_SOURCE_DIR}/rp2_flash.c
+     ${PROJECT_SOURCE_DIR}/rp2_pio.c
+ )
+diff --git a/ports/rp2/mpconfigport.h b/ports/rp2/mpconfigport.h
+index 2919ed018..a9b3ab107 100644
+--- a/ports/rp2/mpconfigport.h
++++ b/ports/rp2/mpconfigport.h
+@@ -143,6 +143,7 @@ extern const struct _mp_obj_module_t mp_module_onewire;
+ extern const struct _mp_obj_module_t mp_module_rp2;
+ extern const struct _mp_obj_module_t mp_module_usocket;
+ extern const struct _mp_obj_module_t mp_module_utime;
++extern const struct _mp_obj_module_t mp_module_capsens;
+ 
+ #if MICROPY_PY_USOCKET
+ #define SOCKET_BUILTIN_MODULE               { MP_ROM_QSTR(MP_QSTR_usocket), MP_ROM_PTR(&mp_module_usocket) },
+@@ -189,6 +190,7 @@ extern const struct _mod_network_nic_type_t mod_network_nic_type_nina;
+     { MP_OBJ_NEW_QSTR(MP_QSTR__onewire), (mp_obj_t)&mp_module_onewire }, \
+     { MP_OBJ_NEW_QSTR(MP_QSTR__rp2), (mp_obj_t)&mp_module_rp2 }, \
+     { MP_ROM_QSTR(MP_QSTR_utime), MP_ROM_PTR(&mp_module_utime) }, \
++    { MP_ROM_QSTR(MP_QSTR__capsens), MP_ROM_PTR(&mp_module_capsens) }, \
+     SOCKET_BUILTIN_MODULE \
+     NETWORK_BUILTIN_MODULE \
+ 
